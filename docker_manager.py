@@ -96,16 +96,19 @@ def stats_worker():
 
                 if mem_limit_bytes > 0:
                     tot_perc = (tot_mem_bytes / mem_limit_bytes) * 100
-                    tot_mem_str = f"{format_bytes(tot_mem_bytes)} / {format_bytes(mem_limit_bytes)} ({tot_perc:.1f}%)"
+                    tot_mem_str = f"{format_bytes(tot_mem_bytes)} ({tot_perc:.1f}%)"
+                    tot_mem_full = f"{format_bytes(tot_mem_bytes)} / {format_bytes(mem_limit_bytes)} ({tot_perc:.1f}%)"
                     tot_perc_str = f"{tot_perc:.1f}%"
                 else:
                     tot_mem_str = format_bytes(tot_mem_bytes)
+                    tot_mem_full = format_bytes(tot_mem_bytes)
                     tot_perc_str = "0%"
 
                 STATS_CACHE = new_cache
                 STATS_TOTAL = {
                     "cpu": f"{tot_cpu:.1f}%",
                     "mem": tot_mem_str,
+                    "mem_full": tot_mem_full,
                     "mem_perc": tot_perc_str
                 }
         except Exception:
@@ -187,6 +190,7 @@ def get_containers_with_stats():
             "total": len(containers),
             "cpu": STATS_TOTAL.get("cpu", "0.0%"),
             "mem": STATS_TOTAL.get("mem", "0 B"),
+            "mem_full": STATS_TOTAL.get("mem_full", "0 B"),
             "mem_perc": STATS_TOTAL.get("mem_perc", "0%")
         },
         "containers": containers
@@ -283,13 +287,18 @@ HTML_PAGE = """<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 12px 18px;
       flex-wrap: wrap;
     }
+    .header-main-row {
+      display: contents;
+    }
     .brand {
+      order: 1;
       display: flex;
       align-items: center;
       gap: 10px;
+      flex-shrink: 0;
     }
     .brand-icon {
       width: 34px;
@@ -320,8 +329,9 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     .stats-bar {
+      order: 2;
       display: flex;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
       flex-wrap: wrap;
     }
@@ -332,7 +342,7 @@ HTML_PAGE = """<!DOCTYPE html>
       align-items: center;
       gap: 6px;
       background: var(--pill-bg);
-      padding: 5px 10px;
+      padding: 5px 11px;
       border-radius: 8px;
       border: 1px solid var(--card-border);
       white-space: nowrap;
@@ -354,10 +364,11 @@ HTML_PAGE = """<!DOCTYPE html>
     .dot-gray { background: var(--text-dim); }
 
     .header-actions {
+      order: 3;
       display: flex;
       gap: 8px;
       align-items: center;
-      flex-wrap: wrap;
+      flex-shrink: 0;
     }
     button {
       cursor: pointer;
@@ -811,17 +822,79 @@ HTML_PAGE = """<!DOCTYPE html>
       word-break: break-all;
     }
 
-    /* Responsive Breakpoints */
-    @media (max-width: 1024px) {
+    /* Responsive Breakpoints & Clean Layout */
+    @media (max-width: 1119px) {
+      header {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 10px 16px;
+        gap: 10px;
+      }
+      .header-main-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+      }
+      .stats-bar {
+        order: 2;
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding-top: 8px;
+        border-top: 1px dashed var(--card-border);
+      }
+      .stat-pill {
+        flex: 1 1 auto;
+        justify-content: center;
+      }
+    }
+
+    @media (max-width: 850px) {
       .container-row {
         grid-template-columns: minmax(160px, 1fr) 90px 75px 120px auto;
       }
       .col-ports { display: none; }
+      .project-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        padding: 12px 14px;
+      }
+      .project-title-wrap {
+        width: 100%;
+        justify-content: space-between;
+      }
+      .project-meta {
+        font-size: 11.5px;
+      }
+      .project-actions {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+      .btn-action-smart {
+        justify-content: center;
+        padding: 6px 6px;
+        font-size: 11px;
+      }
     }
 
-    @media (max-width: 768px) {
-      header { padding: 10px 16px; }
-      main { padding: 14px 14px 40px; }
+    @media (max-width: 640px) {
+      header { padding: 8px 12px; }
+      main { padding: 12px 12px 40px; }
+      .brand h1 { font-size: 15px; }
+      .brand .badge { display: none; }
+      .stats-bar {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+      }
+      .btn-clean-label { display: none; }
+      .btn-danger-outline { padding: 6px 9px; }
+      .btn-danger-outline::after { content: "Clean"; }
       .container-row {
         display: flex;
         flex-direction: column;
@@ -931,18 +1004,45 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body class="dark-theme">
   <header>
-    <div class="brand">
-      <div class="brand-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
-          <path d="M12 12v9"/>
-          <path d="m8 17 4 4 4-4"/>
-        </svg>
+    <div class="header-main-row">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
+            <path d="M12 12v9"/>
+            <path d="m8 17 4 4 4-4"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Docker Manager</h1>
+        </div>
+        <span class="badge">Native Linux</span>
       </div>
-      <div>
-        <h1>Docker Manager</h1>
+
+      <div class="header-actions">
+        <!-- Light/Dark Toggle -->
+        <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle Light / Dark mode">
+          <svg id="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>
+          </svg>
+        </button>
+
+        <!-- Working Interactive Refresh Button -->
+        <button class="btn btn-secondary" id="refresh-btn" onclick="manualRefresh()" title="Refresh container status and stats">
+          <svg id="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+            <path d="M16 21h5v-5"/>
+          </svg>
+          <span id="refresh-label">Refresh</span>
+        </button>
+
+        <button class="btn btn-danger-outline" onclick="pruneSystem()" title="Clean unused Docker caches and stopped containers">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+          <span class="btn-clean-label">Clean Cache</span>
+        </button>
       </div>
-      <span class="badge">Native Linux</span>
     </div>
 
     <div class="stats-bar">
@@ -953,34 +1053,9 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="stat-pill stat-pill-metric" title="Total container CPU consumption">
         ⚡ CPU: <strong id="stat-cpu">0.0%</strong>
       </div>
-      <div class="stat-pill stat-pill-metric" title="Total container RAM consumption">
+      <div class="stat-pill stat-pill-metric" id="stat-mem-pill" title="Total container RAM consumption">
         🧠 RAM: <strong id="stat-mem">0 B</strong>
       </div>
-    </div>
-
-    <div class="header-actions">
-      <!-- Light/Dark Toggle -->
-      <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle Light / Dark mode">
-        <svg id="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>
-        </svg>
-      </button>
-
-      <!-- Working Interactive Refresh Button -->
-      <button class="btn btn-secondary" id="refresh-btn" onclick="manualRefresh()" title="Refresh container status and stats">
-        <svg id="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-          <path d="M3 3v5h5"/>
-          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-          <path d="M16 21h5v-5"/>
-        </svg>
-        <span id="refresh-label">Refresh</span>
-      </button>
-
-      <button class="btn btn-danger-outline" onclick="pruneSystem()">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-        Clean Cache
-      </button>
     </div>
   </header>
 
@@ -1124,7 +1199,14 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('stat-running').innerText = totals.running || 0;
       document.getElementById('stat-stopped').innerText = totals.stopped || 0;
       document.getElementById('stat-cpu').innerText = totals.cpu || '0.0%';
-      document.getElementById('stat-mem').innerText = totals.mem || '0 B';
+      const memElem = document.getElementById('stat-mem');
+      if (memElem) {
+        memElem.innerText = totals.mem || '0 B';
+        const pill = document.getElementById('stat-mem-pill');
+        if (pill && totals.mem_full) {
+          pill.title = `Total container RAM: ${totals.mem_full}`;
+        }
+      }
     }
 
     function toggleProjectCollapse(project) {
@@ -1189,7 +1271,7 @@ HTML_PAGE = """<!DOCTYPE html>
         return bytes.toFixed(1) + ' ' + u[i];
       }
 
-      const isMobile = window.innerWidth <= 768;
+      const isMobile = window.innerWidth <= 850;
 
       let html = '';
       for (const [project, group] of Object.entries(groups)) {
