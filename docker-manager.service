@@ -1,0 +1,14 @@
+[Unit]
+Description=Lightweight Local Docker Manager
+After=network.target docker.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/docker-manager
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
