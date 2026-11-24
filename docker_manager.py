@@ -1182,11 +1182,13 @@ HTML_PAGE = """<!DOCTYPE html>
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 12px;
-      overflow: hidden;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
     }
     .data-table {
       width: 100%;
+      min-width: 650px;
       border-collapse: collapse;
       font-size: 12px;
     }
@@ -1194,6 +1196,7 @@ HTML_PAGE = """<!DOCTYPE html>
       padding: 12px 16px;
       text-align: left;
       border-bottom: 1px solid var(--row-border);
+      vertical-align: middle;
     }
     .data-table th {
       background: var(--card-header);
@@ -1201,27 +1204,36 @@ HTML_PAGE = """<!DOCTYPE html>
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
+      white-space: nowrap;
     }
     .data-table tr:hover {
       background: var(--row-hover);
     }
     .badge-in-use {
       font-size: 10.5px;
-      padding: 2px 8px;
+      padding: 3px 8px;
       border-radius: 9999px;
       background: var(--success-bg);
       color: #10b981;
       border: 1px solid rgba(16, 185, 129, 0.25);
       font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      line-height: 1.2;
     }
     .badge-unused {
       font-size: 10.5px;
-      padding: 2px 8px;
+      padding: 3px 8px;
       border-radius: 9999px;
       background: var(--warning-bg);
       color: var(--warning);
       border: 1px solid rgba(245, 158, 11, 0.25);
       font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      line-height: 1.2;
     }
 
     /* Terminal Console Modal */
@@ -1354,6 +1366,18 @@ HTML_PAGE = """<!DOCTYPE html>
       .btn-clean-label { display: none; }
       .btn-danger-outline { padding: 6px 9px; }
       .btn-danger-outline::after { content: "Clean"; }
+      .panel-top-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+      }
+      .panel-top-bar .btn {
+        width: 100%;
+        justify-content: center;
+      }
+      .data-table th, .data-table td {
+        padding: 10px 12px;
+      }
       .container-row {
         display: flex;
         flex-direction: column;
@@ -2296,9 +2320,9 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       let html = '';
       filtered.forEach(img => {
-        const statusHtml = img.in_use 
-          ? `<span class="badge-in-use">In Use (${img.containers.join(', ') || 'container'})</span>`
-          : `<span class="badge-unused">Unused</span>`;
+        const statusHtml = (img.containers && img.containers.length) 
+          ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${img.containers.map(c => `<span class="badge-in-use">${c}</span>`).join('')}</div>`
+          : (img.in_use ? `<span class="badge-in-use">In Use</span>` : `<span class="badge-unused">Unused</span>`);
 
         html += `
           <tr>
@@ -2383,9 +2407,9 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       let html = '';
       filtered.forEach(v => {
-        const usingHtml = v.in_use 
-          ? `<span class="badge-in-use">${v.containers.join(', ')}</span>`
-          : `<span class="badge-unused">Dangling / Unused</span>`;
+        const usingHtml = (v.containers && v.containers.length) 
+          ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${v.containers.map(c => `<span class="badge-in-use">${c}</span>`).join('')}</div>`
+          : (v.in_use ? `<span class="badge-in-use">In Use</span>` : `<span class="badge-unused">Unused</span>`);
 
         html += `
           <tr>
