@@ -1227,12 +1227,11 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .data-table {
       width: 100%;
-      min-width: 650px;
       border-collapse: collapse;
       font-size: 12px;
     }
     .data-table th, .data-table td {
-      padding: 12px 16px;
+      padding: 12px 14px;
       text-align: left;
       border-bottom: 1px solid var(--row-border);
       vertical-align: middle;
@@ -1247,6 +1246,21 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .data-table tr:hover {
       background: var(--row-hover);
+    }
+    .data-table .col-action {
+      width: 1%;
+      white-space: nowrap;
+      text-align: right;
+    }
+    .vol-name-text {
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text);
+      word-break: break-all;
+      max-width: 280px;
+    }
+    .vol-driver-sub, .img-id-sub {
+      display: none;
     }
     .badge-in-use {
       font-size: 10.5px;
@@ -1388,6 +1402,38 @@ HTML_PAGE = """<!DOCTYPE html>
         padding: 6px 6px;
         font-size: 11px;
       }
+      .col-hide-mobile {
+        display: none !important;
+      }
+      .vol-driver-sub {
+        display: inline-block;
+        font-size: 9.5px;
+        color: var(--text-dim);
+        background: var(--pill-bg);
+        padding: 1px 5px;
+        border-radius: 4px;
+        border: 1px solid var(--card-border);
+        margin-top: 4px;
+      }
+      .img-id-sub {
+        display: inline-block;
+        font-size: 9.5px;
+        color: var(--accent);
+        background: var(--pill-bg);
+        padding: 1px 5px;
+        border-radius: 4px;
+        border: 1px solid var(--card-border);
+        margin-left: 4px;
+      }
+      .vol-name-text {
+        max-width: 190px;
+      }
+      .data-table th, .data-table td {
+        padding: 10px 10px;
+      }
+      .data-table .col-action {
+        padding-right: 12px;
+      }
     }
 
     @media (max-width: 640px) {
@@ -1414,8 +1460,14 @@ HTML_PAGE = """<!DOCTYPE html>
         width: 100%;
         justify-content: center;
       }
+      .vol-name-text {
+        max-width: 140px;
+      }
       .data-table th, .data-table td {
-        padding: 10px 12px;
+        padding: 9px 6px;
+      }
+      .data-table .col-action {
+        padding-right: 8px;
       }
       .container-row {
         display: flex;
@@ -1655,11 +1707,11 @@ HTML_PAGE = """<!DOCTYPE html>
           <thead>
             <tr>
               <th>Repository & Tag</th>
-              <th>Image ID</th>
+              <th class="col-hide-mobile">Image ID</th>
               <th>Size</th>
-              <th>Created</th>
+              <th class="col-hide-mobile">Created</th>
               <th>Status</th>
-              <th style="text-align: right;">Action</th>
+              <th class="col-action" style="text-align: right;">Action</th>
             </tr>
           </thead>
           <tbody id="images-tbody">
@@ -1682,10 +1734,10 @@ HTML_PAGE = """<!DOCTYPE html>
           <thead>
             <tr>
               <th>Volume Name</th>
-              <th>Driver</th>
-              <th>Mountpoint (Host)</th>
+              <th class="col-hide-mobile">Driver</th>
+              <th class="col-hide-mobile">Mountpoint (Host)</th>
               <th>Used By Container</th>
-              <th style="text-align: right;">Action</th>
+              <th class="col-action" style="text-align: right;">Action</th>
             </tr>
           </thead>
           <tbody id="volumes-tbody">
@@ -2402,13 +2454,15 @@ HTML_PAGE = """<!DOCTYPE html>
           <tr>
             <td>
               <div style="font-weight:600; color:var(--text);">${img.repository}</div>
-              <div style="font-size:11px; color:var(--text-dim); font-family:'JetBrains Mono';">${img.tag}</div>
+              <div style="font-size:11px; color:var(--text-dim); font-family:'JetBrains Mono';">
+                ${img.tag} <span class="img-id-sub">${img.id}</span>
+              </div>
             </td>
-            <td><code style="color:var(--accent); font-size:11.5px;">${img.id}</code></td>
+            <td class="col-hide-mobile"><code style="color:var(--accent); font-size:11.5px;">${img.id}</code></td>
             <td><strong>${img.size}</strong></td>
-            <td style="color:var(--text-dim);">${img.created}</td>
+            <td class="col-hide-mobile" style="color:var(--text-dim);">${img.created}</td>
             <td>${statusHtml}</td>
-            <td style="text-align: right;">
+            <td class="col-action" style="text-align: right;">
               <button class="btn btn-danger-outline btn-sm" onclick="deleteImage('${img.id}', '${img.full_name}')" title="Delete image">Delete</button>
             </td>
           </tr>
@@ -2488,12 +2542,13 @@ HTML_PAGE = """<!DOCTYPE html>
         html += `
           <tr>
             <td>
-              <div style="font-weight:600; font-family:'JetBrains Mono'; color:var(--text);">${v.name}</div>
+              <div class="vol-name-text">${v.name}</div>
+              <span class="vol-driver-sub">${v.driver}</span>
             </td>
-            <td><span class="tab-badge">${v.driver}</span></td>
-            <td style="color:var(--text-dim); font-size:11px; font-family:'JetBrains Mono'; word-break:break-all;">${v.mountpoint}</td>
+            <td class="col-hide-mobile"><span class="tab-badge">${v.driver}</span></td>
+            <td class="col-hide-mobile" style="color:var(--text-dim); font-size:11px; font-family:'JetBrains Mono'; word-break:break-all;">${v.mountpoint}</td>
             <td>${usingHtml}</td>
-            <td style="text-align: right;">
+            <td class="col-action" style="text-align: right;">
               <button class="btn btn-danger-outline btn-sm" onclick="deleteVolume('${v.name}')" title="Delete volume">Delete</button>
             </td>
           </tr>
