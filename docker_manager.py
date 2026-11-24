@@ -182,11 +182,38 @@ def get_containers_with_stats():
         except Exception:
             continue
 
+    # Match stats and calculate stack status
+    stacks = {}
+    for c in containers:
+        p = c.get("project", "")
+        if p and p != "Standalone":
+            if p not in stacks:
+                stacks[p] = {"running": 0, "stopped": 0, "total": 0}
+            stacks[p]["total"] += 1
+            if c.get("state") == "running":
+                stacks[p]["running"] += 1
+            else:
+                stacks[p]["stopped"] += 1
+        else:
+            cname = c.get("name", "unknown")
+            s_name = f"standalone_{cname}"
+            stacks[s_name] = {
+                "running": 1 if c.get("state") == "running" else 0,
+                "stopped": 0 if c.get("state") == "running" else 1,
+                "total": 1
+            }
+
+    running_stacks = sum(1 for p, s in stacks.items() if s["running"] > 0)
+    stopped_stacks = sum(1 for p, s in stacks.items() if s["running"] == 0)
+
     return {
         "totals": {
-            "running": running_count,
-            "stopped": stopped_count,
-            "total": len(containers),
+            "running": running_stacks,
+            "stopped": stopped_stacks,
+            "running_containers": running_count,
+            "stopped_containers": stopped_count,
+            "total_containers": len(containers),
+            "total_stacks": len(stacks),
             "cpu": STATS_TOTAL.get("cpu", "0.0%"),
             "mem": STATS_TOTAL.get("mem", "0 B"),
             "mem_full": STATS_TOTAL.get("mem_full", "0 B"),
@@ -645,6 +672,18 @@ HTML_PAGE = """<!DOCTYPE html>
       color: var(--accent);
       border-color: var(--card-border);
       font-weight: 700;
+    }
+    .tab-icon {
+      flex-shrink: 0;
+      opacity: 0.85;
+      transition: all 0.15s ease;
+    }
+    .nav-tab:hover .tab-icon {
+      opacity: 1;
+    }
+    .nav-tab.active .tab-icon {
+      opacity: 1;
+      stroke: var(--accent);
     }
     .tab-badge {
       font-size: 10.5px;
@@ -1533,8 +1572,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <!-- Live Telemetry Status Bar -->
     <div class="stats-bar">
-      <div class="stat-pill"><span class="dot dot-green"></span> <strong id="stat-running">0</strong> running</div>
-      <div class="stat-pill"><span class="dot dot-gray"></span> <strong id="stat-stopped">0</strong> stopped</div>
+      <div class="stat-pill" id="stat-pill-running" title="Running stacks / services"><span class="dot dot-green"></span> <strong id="stat-running">0</strong> running</div>
+      <div class="stat-pill" id="stat-pill-stopped" title="Stopped stacks / services"><span class="dot dot-gray"></span> <strong id="stat-stopped">0</strong> stopped</div>
       
       <!-- Live Metrics -->
       <div class="stat-pill stat-pill-metric" title="Total container CPU consumption">
@@ -1550,15 +1589,32 @@ HTML_PAGE = """<!DOCTYPE html>
   <div class="controls-strip">
     <div class="nav-tabs">
       <button class="nav-tab active" id="tab-btn-containers" onclick="switchTab('containers')">
-        <span>📦 Containers</span>
+        <svg class="tab-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+          <line x1="12" y1="22.08" x2="12" y2="12"/>
+        </svg>
+        <span>Containers</span>
         <span class="tab-badge" id="tab-count-containers">0</span>
       </button>
+
       <button class="nav-tab" id="tab-btn-images" onclick="switchTab('images')">
-        <span>🖼️ Images</span>
+        <svg class="tab-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+          <polyline points="2 17 12 22 22 17"/>
+          <polyline points="2 12 12 17 22 12"/>
+        </svg>
+        <span>Images</span>
         <span class="tab-badge" id="tab-count-images">0</span>
       </button>
+
       <button class="nav-tab" id="tab-btn-volumes" onclick="switchTab('volumes')">
-        <span>📂 Volumes</span>
+        <svg class="tab-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <ellipse cx="12" cy="5" rx="9" ry="3"/>
+          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+          <path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>
+        </svg>
+        <span>Volumes</span>
         <span class="tab-badge" id="tab-count-volumes">0</span>
       </button>
     </div>
@@ -1842,8 +1898,12 @@ HTML_PAGE = """<!DOCTYPE html>
         cachedContainers = data.containers || [];
         document.getElementById('tab-count-containers').innerText = cachedContainers.length;
 
-        if (activeDropdownId && !forceRender) {
+        if (data.totals) {
           updateHeaderStats(data.totals);
+        }
+
+        if (activeDropdownId && !forceRender) {
+          // Dropdown is open, keep DOM stable
         } else {
           renderContainers(data);
         }
@@ -1856,9 +1916,23 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function updateHeaderStats(totals) {
       if (!totals) return;
-      document.getElementById('stat-running').innerText = totals.running || 0;
-      document.getElementById('stat-stopped').innerText = totals.stopped || 0;
-      document.getElementById('stat-cpu').innerText = totals.cpu || '0.0%';
+      const rElem = document.getElementById('stat-running');
+      const sElem = document.getElementById('stat-stopped');
+      if (rElem) rElem.innerText = totals.running !== undefined ? totals.running : 0;
+      if (sElem) sElem.innerText = totals.stopped !== undefined ? totals.stopped : 0;
+
+      const rPill = document.getElementById('stat-pill-running');
+      const sPill = document.getElementById('stat-pill-stopped');
+      if (rPill && totals.running_containers !== undefined) {
+        rPill.title = `${totals.running} stack(s) running (${totals.running_containers} containers)`;
+      }
+      if (sPill && totals.stopped_containers !== undefined) {
+        sPill.title = `${totals.stopped} stack(s) stopped (${totals.stopped_containers} containers)`;
+      }
+
+      const cpuElem = document.getElementById('stat-cpu');
+      if (cpuElem) cpuElem.innerText = totals.cpu || '0.0%';
+
       const memElem = document.getElementById('stat-mem');
       if (memElem) {
         memElem.innerText = totals.mem || '0 B';
@@ -2609,7 +2683,13 @@ HTML_PAGE = """<!DOCTYPE html>
     });
 
     // Initial Fetch & Auto Refresh
-    fetchContainers(true);
+    async function initDashboard() {
+      await fetchContainers(true);
+      fetchImages();
+      fetchVolumes();
+    }
+    initDashboard();
+
     setInterval(() => {
       if (currentTab === 'containers') fetchContainers(false);
     }, 3500);
