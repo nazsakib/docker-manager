@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Lightweight Docker Web Manager for Personal Desktop
-- Responsive on all screens (desktop, laptop, mobile, split-screen)
-- Light & Dark theme toggle with persistent memory
-- Collapsible Project Dropdowns (click dropdown/header to open & close services)
-- Individual Container Dropdowns (Options menu for restart, stop, logs, inspect, copy ID)
-- Expandable Container Details Drawer
-- Smart SVG action icons (Start All, Stop All, Restart All with animated hover)
-- Interactive, responsive manual Refresh button with spin feedback & toast confirmation
-- Real-time CPU & RAM stats (Total & Per-Container)
+Docker Manager - Lightweight Local Docker Web Control Panel
+- Zero-overhead native Linux Docker management (< 20 MB RAM, 0% CPU)
+- 4 High-Value Features:
+  1. Interactive Web Terminal & Desktop Terminal Launcher (Exec Shell)
+  2. Images Manager (Disk Space telemetry, In-Use indicators, Delete & Prune)
+  3. Volumes & Mounts Explorer (Host mountpoints & attached containers)
+  4. Real-time Search Filter Bar + Environment Variables & Network Inspector
+- Collapsible Project Groups, Smart Action Icons, Light/Dark themes
 """
 import os
 import sys
@@ -22,7 +21,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 PORT = 4444
 
 STATS_CACHE = {}
-STATS_TOTAL = {"cpu": "0.0%", "mem": "0 B", "mem_perc": "0%"}
+STATS_TOTAL = {"cpu": "0.0%", "mem": "0 B", "mem_full": "0 B", "mem_perc": "0%"}
 
 def run_cmd(cmd):
     try:
@@ -119,7 +118,7 @@ def get_containers_with_stats():
     cmd = ["docker", "ps", "-a", "--format", "json"]
     success, stdout, stderr = run_cmd(cmd)
     if not success:
-        return {"totals": {"running": 0, "stopped": 0, "total": 0, "cpu": "0.0%", "mem": "0 B"}, "containers": []}
+        return {"totals": {"running": 0, "stopped": 0, "total": 0, "cpu": "0.0%", "mem": "0 B", "mem_full": "0 B"}, "containers": []}
 
     containers = []
     running_count = 0
@@ -196,6 +195,186 @@ def get_containers_with_stats():
         "containers": containers
     }
 
+def get_images():
+    """Retrieve all local docker images with in-use status and container attribution."""
+    res = subprocess.run(["docker", "images", "--format", "json"], capture_output=True, text=True)
+    c_res = subprocess.run(["docker", "ps", "-a", "--format", "json"], capture_output=True, text=True)
+    
+    active_images_map = {}
+    for line in c_res.stdout.strip().splitlines():
+        if line.strip():
+            try:
+                c = json.loads(line)
+                c_name = c.get("Names", "").lstrip("/")
+                img = c.get("Image", "")
+                if img not in active_images_map:
+                    active_images_map[img] = []
+                active_images_map[img].append(c_name)
+            except Exception:
+                pass
+
+    images = []
+    tot_size_bytes = 0
+    for line in res.stdout.strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            img = json.loads(line)
+            repo = img.get("Repository", "")
+            tag = img.get("Tag", "")
+            full_name = f"{repo}:{tag}" if tag and tag != "<none>" else repo
+            img_id = img.get("ID", "")[:12]
+            size_str = img.get("Size", "")
+            tot_size_bytes += parse_bytes(size_str)
+            
+            using_containers = []
+            for target, cnames in active_images_map.items():
+                if target in (full_name, repo, img_id) or (img_id in target):
+                    using_containers.extend(cnames)
+            using_containers = sorted(list(set(using_containers)))
+
+            images.append({
+                "id": img_id,
+                "repository": repo,
+                "tag": tag,
+                "full_name": full_name,
+                "size": size_str,
+                "created": img.get("CreatedSince", "") or img.get("CreatedAt", ""),
+                "in_use": len(using_containers) > 0,
+                "containers": using_containers
+            })
+        except Exception:
+            continue
+
+    return {
+        "count": len(images),
+        "total_size": format_bytes(tot_size_bytes),
+        "images": images
+    }
+
+def get_volumes():
+    """Retrieve all local docker volumes with container mount associations."""
+    res = subprocess.run(["docker", "volume", "ls", "--format", "json"], capture_output=True, text=True)
+    c_res = subprocess.run(["docker", "ps", "-a", "--format", "json"], capture_output=True, text=True)
+    
+    vol_containers_map = {}
+    for line in c_res.stdout.strip().splitlines():
+        if line.strip():
+            try:
+                c = json.loads(line)
+                c_name = c.get("Names", "").lstrip("/")
+                mounts_str = c.get("Mounts", "")
+                for m in mounts_str.split(","):
+                    m = m.strip()
+                    if m:
+                        if m not in vol_containers_map:
+                            vol_containers_map[m] = []
+                        vol_containers_map[m].append(c_name)
+            except Exception:
+                pass
+
+    volumes = []
+    for line in res.stdout.strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            v = json.loads(line)
+            name = v.get("Name", "")
+            using = vol_containers_map.get(name, [])
+            volumes.append({
+                "name": name,
+                "driver": v.get("Driver", "local"),
+                "mountpoint": v.get("Mountpoint", ""),
+                "labels": v.get("Labels", ""),
+                "in_use": len(using) > 0,
+                "containers": using
+            })
+        except Exception:
+            continue
+
+    return {
+        "count": len(volumes),
+        "volumes": volumes
+    }
+
+def get_container_inspect(cid):
+    """Retrieve environment variables, networking, and mounts for a container."""
+    res = subprocess.run(["docker", "inspect", cid], capture_output=True, text=True)
+    if res.returncode != 0 or not res.stdout.strip():
+        return None
+    try:
+        data = json.loads(res.stdout)[0]
+        config = data.get("Config", {})
+        env_pairs = []
+        for e in config.get("Env", []):
+            if "=" in e:
+                k, v = e.split("=", 1)
+                env_pairs.append({"key": k, "value": v})
+            else:
+                env_pairs.append({"key": e, "value": ""})
+
+        networks = []
+        for net_name, net_data in data.get("NetworkSettings", {}).get("Networks", {}).items():
+            networks.append({
+                "name": net_name,
+                "ip": net_data.get("IPAddress", "") or "Host / None",
+                "gateway": net_data.get("Gateway", "") or "-",
+                "mac": net_data.get("MacAddress", "") or "-"
+            })
+
+        mounts = []
+        for m in data.get("Mounts", []):
+            mounts.append({
+                "type": m.get("Type", "bind"),
+                "name": m.get("Name", ""),
+                "source": m.get("Source", ""),
+                "destination": m.get("Destination", ""),
+                "rw": m.get("RW", True)
+            })
+
+        return {
+            "id": data.get("Id", "")[:12],
+            "name": data.get("Name", "").lstrip("/"),
+            "image": config.get("Image", ""),
+            "command": " ".join(config.get("Cmd", [])) if config.get("Cmd") else "None",
+            "created": data.get("Created", "")[:19].replace("T", " "),
+            "status": data.get("State", {}).get("Status", ""),
+            "running": data.get("State", {}).get("Running", False),
+            "restart_policy": data.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", "no"),
+            "env": env_pairs,
+            "networks": networks,
+            "mounts": mounts
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+def exec_container_cmd(cid, cmd_str):
+    """Execute a command inside a running container and return stdout/stderr."""
+    chk = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", cid], capture_output=True, text=True)
+    if chk.stdout.strip() != "true":
+        return False, "", "Container is not running. Please start the container first."
+    res = subprocess.run(["docker", "exec", cid, "sh", "-c", cmd_str], capture_output=True, text=True, timeout=15)
+    return res.returncode == 0, res.stdout, res.stderr
+
+def launch_container_terminal(cid):
+    """Launch an interactive desktop terminal attached to the container."""
+    terms = [
+        ["ghostty", "-e", "docker", "exec", "-it", cid, "/bin/sh"],
+        ["gnome-terminal", "--", "docker", "exec", "-it", cid, "/bin/sh"],
+        ["x-terminal-emulator", "-e", "docker", "exec", "-it", cid, "/bin/sh"]
+    ]
+    for t in terms:
+        try:
+            if subprocess.run(["which", t[0]], capture_output=True).returncode == 0:
+                env = os.environ.copy()
+                if "DISPLAY" not in env:
+                    env["DISPLAY"] = ":0"
+                subprocess.Popen(t, env=env)
+                return True, t[0]
+        except Exception:
+            pass
+    return False, "No desktop terminal emulator found"
+
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -213,6 +392,8 @@ HTML_PAGE = """<!DOCTYPE html>
       --success-bg: rgba(16, 185, 129, 0.12);
       --danger: #ef4444;
       --danger-bg: rgba(239, 68, 68, 0.12);
+      --warning: #f59e0b;
+      --warning-bg: rgba(245, 158, 11, 0.12);
     }
 
     /* Dark Theme */
@@ -238,6 +419,7 @@ HTML_PAGE = """<!DOCTYPE html>
       --dropdown-bg: #162032;
       --dropdown-border: #29354d;
       --dropdown-hover: #1e293b;
+      --input-bg: #0f172a;
     }
 
     /* Light Theme */
@@ -263,6 +445,7 @@ HTML_PAGE = """<!DOCTYPE html>
       --dropdown-bg: #ffffff;
       --dropdown-border: #cbd5e1;
       --dropdown-hover: #f1f5f9;
+      --input-bg: #f1f5f9;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -276,6 +459,7 @@ HTML_PAGE = """<!DOCTYPE html>
       transition: background-color 0.2s ease, color 0.2s ease;
     }
 
+    /* Structured Adaptive Header */
     header {
       background: var(--header-bg);
       backdrop-filter: blur(14px);
@@ -283,18 +467,19 @@ HTML_PAGE = """<!DOCTYPE html>
       position: sticky;
       top: 0;
       z-index: 40;
-      padding: 12px 24px;
+      padding: 10px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .header-main-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px 18px;
-      flex-wrap: wrap;
-    }
-    .header-main-row {
-      display: contents;
+      width: 100%;
+      gap: 14px;
     }
     .brand {
-      order: 1;
       display: flex;
       align-items: center;
       gap: 10px;
@@ -328,12 +513,20 @@ HTML_PAGE = """<!DOCTYPE html>
       white-space: nowrap;
     }
 
+    .header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
     .stats-bar {
-      order: 2;
       display: flex;
       gap: 8px;
       align-items: center;
       flex-wrap: wrap;
+      padding-top: 6px;
+      border-top: 1px dashed var(--card-border);
     }
     .stat-pill {
       font-size: 12px;
@@ -362,14 +555,6 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .dot-green { background: var(--success); box-shadow: 0 0 8px var(--success); }
     .dot-gray { background: var(--text-dim); }
-
-    .header-actions {
-      order: 3;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-shrink: 0;
-    }
     button {
       cursor: pointer;
       font-family: inherit;
@@ -422,6 +607,88 @@ HTML_PAGE = """<!DOCTYPE html>
     @keyframes spin {
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
+    }
+
+    /* Sub-Header: Search & Navigation Tabs */
+    .controls-strip {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--card-border);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .nav-tabs {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .nav-tab {
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      color: var(--text-muted);
+      background: transparent;
+      border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .nav-tab:hover {
+      background: var(--pill-bg);
+      color: var(--text);
+    }
+    .nav-tab.active {
+      background: var(--pill-bg);
+      color: var(--accent);
+      border-color: var(--card-border);
+      font-weight: 700;
+    }
+    .tab-badge {
+      font-size: 10.5px;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      background: var(--btn-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text-dim);
+    }
+    .nav-tab.active .tab-badge {
+      background: var(--accent-glow);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .search-box {
+      position: relative;
+      flex: 1;
+      max-width: 380px;
+      min-width: 220px;
+    }
+    .search-input {
+      width: 100%;
+      padding: 7px 12px 7px 32px;
+      font-size: 12px;
+      font-family: inherit;
+      border-radius: 8px;
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      outline: none;
+      transition: all 0.15s ease;
+    }
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-dim);
+      pointer-events: none;
     }
 
     main {
@@ -749,7 +1016,7 @@ HTML_PAGE = """<!DOCTYPE html>
       border: 1px solid var(--dropdown-border);
       border-radius: 9px;
       box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.35), 0 8px 10px -6px rgba(0, 0, 0, 0.25);
-      min-width: 185px;
+      min-width: 195px;
       z-index: 60;
       padding: 5px;
     }
@@ -792,13 +1059,34 @@ HTML_PAGE = """<!DOCTYPE html>
     .container-details {
       display: none;
       background: var(--details-bg);
-      padding: 14px 20px;
+      padding: 16px 20px;
       border-top: 1px dashed var(--card-border);
       font-size: 12px;
     }
     .container-item.open .container-details {
       display: block;
     }
+    .details-subtabs {
+      display: flex;
+      gap: 6px;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 10px;
+      margin-bottom: 14px;
+    }
+    .details-subtab {
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      background: transparent;
+      color: var(--text-muted);
+    }
+    .details-subtab.active {
+      background: var(--pill-bg);
+      color: var(--accent);
+      border: 1px solid var(--card-border);
+      font-weight: 600;
+    }
+
     .details-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -822,28 +1110,197 @@ HTML_PAGE = """<!DOCTYPE html>
       word-break: break-all;
     }
 
+    /* Environment Variables Table */
+    .env-table-wrap {
+      max-height: 280px;
+      overflow-y: auto;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card-bg);
+    }
+    .env-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+    }
+    .env-table th, .env-table td {
+      padding: 6px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--row-border);
+    }
+    .env-table th {
+      background: var(--card-header);
+      color: var(--text-muted);
+      font-size: 10.5px;
+      text-transform: uppercase;
+      position: sticky;
+      top: 0;
+    }
+    .env-key {
+      color: var(--accent);
+      font-weight: 600;
+      width: 35%;
+      word-break: break-all;
+    }
+    .env-val {
+      color: var(--text);
+      word-break: break-all;
+    }
+
+    /* Images & Volumes Views */
+    .view-panel {
+      display: none;
+    }
+    .view-panel.active {
+      display: block;
+    }
+    .panel-top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      padding: 10px 16px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .panel-meta {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      display: flex;
+      gap: 14px;
+      align-items: center;
+    }
+    .panel-meta strong {
+      color: var(--text);
+    }
+
+    .data-table-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .data-table th, .data-table td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--row-border);
+    }
+    .data-table th {
+      background: var(--card-header);
+      color: var(--text-dim);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .data-table tr:hover {
+      background: var(--row-hover);
+    }
+    .badge-in-use {
+      font-size: 10.5px;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: var(--success-bg);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      font-weight: 600;
+    }
+    .badge-unused {
+      font-size: 10.5px;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: var(--warning-bg);
+      color: var(--warning);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      font-weight: 600;
+    }
+
+    /* Terminal Console Modal */
+    .terminal-modal-body {
+      padding: 0;
+      background: #050811;
+      display: flex;
+      flex-direction: column;
+      height: 480px;
+    }
+    .terminal-chips {
+      display: flex;
+      gap: 6px;
+      padding: 8px 14px;
+      background: #0a0e1a;
+      border-bottom: 1px solid #1e293b;
+      overflow-x: auto;
+    }
+    .chip {
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: #1e293b;
+      color: #94a3b8;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .chip:hover {
+      background: var(--accent);
+      color: #ffffff;
+    }
+    .terminal-screen {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: #a5f3fc;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .terminal-prompt-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: #090d16;
+      border-top: 1px solid #1e293b;
+    }
+    .terminal-prompt-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: #10b981;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+    .terminal-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #ffffff;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+    }
+
     /* Responsive Breakpoints & Clean Layout */
     @media (max-width: 1119px) {
       header {
-        flex-direction: column;
-        align-items: stretch;
         padding: 10px 16px;
         gap: 10px;
       }
-      .header-main-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        width: 100%;
-      }
       .stats-bar {
-        order: 2;
         width: 100%;
         display: flex;
         justify-content: space-between;
         gap: 8px;
-        padding-top: 8px;
-        border-top: 1px dashed var(--card-border);
       }
       .stat-pill {
         flex: 1 1 auto;
@@ -884,6 +1341,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
     @media (max-width: 640px) {
       header { padding: 8px 12px; }
+      .controls-strip { padding: 8px 12px; }
+      .search-box { max-width: 100%; }
       main { padding: 12px 12px 40px; }
       .brand h1 { font-size: 15px; }
       .brand .badge { display: none; }
@@ -935,7 +1394,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    /* Modal for Logs */
+    /* Modal for Logs & Details */
     .modal-overlay {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -954,19 +1413,21 @@ HTML_PAGE = """<!DOCTYPE html>
       border-radius: 14px;
       width: 100%;
       max-width: 900px;
-      max-height: 80vh;
+      max-height: 85vh;
       display: flex;
       flex-direction: column;
       box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
     }
     .modal-header {
-      padding: 14px 18px;
+      padding: 12px 18px;
       border-bottom: 1px solid var(--card-border);
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 10px;
     }
-    .modal-header h3 { font-size: 14px; font-weight: 600; }
+    .modal-header h3 { font-size: 13.5px; font-weight: 600; }
     .modal-body {
       padding: 14px 18px;
       flex: 1;
@@ -1003,6 +1464,7 @@ HTML_PAGE = """<!DOCTYPE html>
   </style>
 </head>
 <body class="dark-theme">
+  <!-- Top Application Bar -->
   <header>
     <div class="header-main-row">
       <div class="brand">
@@ -1027,7 +1489,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </svg>
         </button>
 
-        <!-- Working Interactive Refresh Button -->
+        <!-- Interactive Refresh Button -->
         <button class="btn btn-secondary" id="refresh-btn" onclick="manualRefresh()" title="Refresh container status and stats">
           <svg id="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
@@ -1045,6 +1507,7 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Live Telemetry Status Bar -->
     <div class="stats-bar">
       <div class="stat-pill"><span class="dot dot-green"></span> <strong id="stat-running">0</strong> running</div>
       <div class="stat-pill"><span class="dot dot-gray"></span> <strong id="stat-stopped">0</strong> stopped</div>
@@ -1059,12 +1522,101 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
   </header>
 
-  <main id="app-main">
-    <div style="text-align: center; padding: 60px; color: var(--text-muted);">
-      Loading containers and real-time stats...
+  <!-- Navigation Tabs & Live Search Strip -->
+  <div class="controls-strip">
+    <div class="nav-tabs">
+      <button class="nav-tab active" id="tab-btn-containers" onclick="switchTab('containers')">
+        <span>📦 Containers</span>
+        <span class="tab-badge" id="tab-count-containers">0</span>
+      </button>
+      <button class="nav-tab" id="tab-btn-images" onclick="switchTab('images')">
+        <span>🖼️ Images</span>
+        <span class="tab-badge" id="tab-count-images">0</span>
+      </button>
+      <button class="nav-tab" id="tab-btn-volumes" onclick="switchTab('volumes')">
+        <span>📂 Volumes</span>
+        <span class="tab-badge" id="tab-count-volumes">0</span>
+      </button>
+    </div>
+
+    <!-- Quick Search / Filter Bar -->
+    <div class="search-box">
+      <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" id="global-search" class="search-input" placeholder="Filter containers, images, ports, stacks... (/)" oninput="filterCurrentView(this.value)">
+    </div>
+  </div>
+
+  <main>
+    <!-- View 1: Containers Panel -->
+    <div class="view-panel active" id="panel-containers">
+      <div id="containers-container">
+        <div style="text-align: center; padding: 60px; color: var(--text-muted);">
+          Loading containers and real-time stats...
+        </div>
+      </div>
+    </div>
+
+    <!-- View 2: Images Panel -->
+    <div class="view-panel" id="panel-images">
+      <div class="panel-top-bar">
+        <div class="panel-meta">
+          <span>Total Images: <strong id="img-meta-count">0</strong></span>
+          <span>•</span>
+          <span>Total Disk Size: <strong id="img-meta-size">0 B</strong></span>
+        </div>
+        <button class="btn btn-secondary" onclick="pruneImages()" title="Prune dangling / unused images">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+          Prune Unused Images
+        </button>
+      </div>
+
+      <div class="data-table-card">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Repository & Tag</th>
+              <th>Image ID</th>
+              <th>Size</th>
+              <th>Created</th>
+              <th>Status</th>
+              <th style="text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="images-tbody">
+            <tr><td colspan="6" style="text-align:center; padding: 30px; color: var(--text-dim);">Loading images...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- View 3: Volumes Panel -->
+    <div class="view-panel" id="panel-volumes">
+      <div class="panel-top-bar">
+        <div class="panel-meta">
+          <span>Total Volumes: <strong id="vol-meta-count">0</strong></span>
+        </div>
+      </div>
+
+      <div class="data-table-card">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Volume Name</th>
+              <th>Driver</th>
+              <th>Mountpoint (Host)</th>
+              <th>Used By Container</th>
+              <th style="text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="volumes-tbody">
+            <tr><td colspan="5" style="text-align:center; padding: 30px; color: var(--text-dim);">Loading volumes...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </main>
 
+  <!-- Modal for Logs -->
   <div class="modal-overlay" id="logs-modal">
     <div class="modal">
       <div class="modal-header">
@@ -1075,14 +1627,60 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Modal for In-Browser Exec Terminal -->
+  <div class="modal-overlay" id="terminal-modal">
+    <div class="modal" style="max-width: 820px;">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <h3 id="terminal-modal-title">Exec Terminal</h3>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-secondary btn-sm" onclick="launchDesktopTerminal()" title="Launch full interactive session in Ghostty / GNOME Terminal">
+            🖥️ Desktop Terminal
+          </button>
+          <button class="btn btn-secondary btn-sm" onclick="closeTerminal()">Close</button>
+        </div>
+      </div>
+
+      <div class="terminal-modal-body">
+        <div class="terminal-chips">
+          <span style="color:#64748b; font-size:10px; align-self:center; font-weight:600;">QUICK:</span>
+          <span class="chip" onclick="quickTerminal('ls -la')">ls -la</span>
+          <span class="chip" onclick="quickTerminal('env')">env</span>
+          <span class="chip" onclick="quickTerminal('df -h')">df -h</span>
+          <span class="chip" onclick="quickTerminal('ps aux')">ps aux</span>
+          <span class="chip" onclick="quickTerminal('whoami')">whoami</span>
+          <span class="chip" onclick="clearTerminalScreen()">clear</span>
+        </div>
+        <div class="terminal-screen" id="terminal-screen">Type a command below to execute inside the container...&#10;</div>
+        <div class="terminal-prompt-bar">
+          <span class="terminal-prompt-label" id="terminal-prompt-label">root@container:/#</span>
+          <input type="text" class="terminal-input" id="terminal-input" placeholder="Type command (e.g. ls, env, cat file)..." onkeydown="handleTerminalKey(event)">
+          <button class="btn btn-secondary btn-sm" onclick="sendTerminalCommand()">Run</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
-    // State of collapsed projects and open details
+    // State Management
+    let currentTab = 'containers';
+    let cachedContainers = [];
+    let cachedImages = [];
+    let cachedVolumes = [];
+    let searchQuery = '';
     let collapsedProjects = JSON.parse(localStorage.getItem('docker-collapsed-projects') || '{}');
     let openContainers = {};
+    let containerInspectCache = {};
     let activeDropdownId = null;
     let isRefreshing = false;
+    let activeTerminalCid = null;
+    let activeTerminalName = null;
+    let terminalHistory = [];
+    let historyIdx = -1;
 
     // Theme Management
     function initTheme() {
@@ -1121,7 +1719,43 @@ HTML_PAGE = """<!DOCTYPE html>
       toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2800);
     }
 
-    // Working manual refresh with animation & feedback
+    // Tab Switching
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
+      
+      const btn = document.getElementById(`tab-btn-${tab}`);
+      const panel = document.getElementById(`panel-${tab}`);
+      if (btn) btn.classList.add('active');
+      if (panel) panel.classList.add('active');
+
+      if (tab === 'images') fetchImages();
+      if (tab === 'volumes') fetchVolumes();
+    }
+
+    // Global Search / Live Filtering
+    function filterCurrentView(q) {
+      searchQuery = (q || '').trim().toLowerCase();
+      if (currentTab === 'containers') renderContainers({ containers: cachedContainers });
+      if (currentTab === 'images') renderImages(cachedImages);
+      if (currentTab === 'volumes') renderVolumes(cachedVolumes);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+        e.preventDefault();
+        const s = document.getElementById('global-search');
+        if (s) { s.focus(); s.select(); }
+      }
+      if (e.key === 'Escape') {
+        closeAllDropdowns();
+        closeLogs();
+        closeTerminal();
+      }
+    });
+
+    // Refresh Logic
     async function manualRefresh() {
       if (isRefreshing) return;
       isRefreshing = true;
@@ -1131,12 +1765,12 @@ HTML_PAGE = """<!DOCTYPE html>
       if (label) label.innerText = 'Refreshing...';
 
       try {
-        const data = await fetchContainers(true);
-        const running = data?.totals?.running ?? 0;
-        const total = data?.totals?.total ?? 0;
-        showToast(`✓ Refreshed: ${running} running of ${total} containers`);
+        if (currentTab === 'containers') await fetchContainers(true);
+        if (currentTab === 'images') await fetchImages();
+        if (currentTab === 'volumes') await fetchVolumes();
+        showToast('✓ Updated');
       } catch (e) {
-        showToast('Refresh failed: could not connect to Docker');
+        showToast('Refresh failed');
       } finally {
         setTimeout(() => {
           if (icon) icon.classList.remove('spin-anim');
@@ -1146,7 +1780,6 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    // Dropdown options management for individual containers
     function toggleContainerDropdown(id, e) {
       if (e) e.stopPropagation();
       const menu = document.getElementById(id);
@@ -1177,11 +1810,14 @@ HTML_PAGE = """<!DOCTYPE html>
       });
     }
 
+    // Fetch Containers
     async function fetchContainers(forceRender = false) {
       try {
         const res = await fetch('/api/containers');
         const data = await res.json();
-        // If user currently has a dropdown menu open and it's not a manual refresh, do not disturb the DOM
+        cachedContainers = data.containers || [];
+        document.getElementById('tab-count-containers').innerText = cachedContainers.length;
+
         if (activeDropdownId && !forceRender) {
           updateHeaderStats(data.totals);
         } else {
@@ -1222,23 +1858,134 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    function toggleContainerDetails(cid, e) {
+    async function toggleContainerDetails(cid, e, defaultTab = 'overview') {
       if (e && (e.target.closest('button') || e.target.closest('a') || e.target.closest('.dropdown-wrapper'))) return;
       openContainers[cid] = !openContainers[cid];
       const item = document.getElementById(`container-item-${cid}`);
       if (item) {
         if (openContainers[cid]) {
           item.classList.add('open');
+          // Fetch inspect data if not cached
+          if (!containerInspectCache[cid]) {
+            try {
+              const res = await fetch(`/api/container/${cid}/inspect`);
+              containerInspectCache[cid] = await res.json();
+              populateInspectDrawer(cid, defaultTab);
+            } catch (err) {}
+          } else {
+            populateInspectDrawer(cid, defaultTab);
+          }
         } else {
           item.classList.remove('open');
         }
       }
     }
 
+    function switchDrawerSubtab(cid, tab) {
+      document.querySelectorAll(`#details-${cid} .details-subtab`).forEach(b => b.classList.remove('active'));
+      const activeBtn = document.getElementById(`subtab-btn-${cid}-${tab}`);
+      if (activeBtn) activeBtn.classList.add('active');
+      populateInspectDrawer(cid, tab);
+    }
+
+    function populateInspectDrawer(cid, tab = 'overview') {
+      const drawer = document.getElementById(`details-body-${cid}`);
+      if (!drawer) return;
+      const data = containerInspectCache[cid];
+      if (!data) return;
+
+      if (tab === 'overview') {
+        drawer.innerHTML = `
+          <div class="details-grid">
+            <div class="detail-item"><span class="detail-label">Container ID</span><span class="detail-value">${data.id}</span></div>
+            <div class="detail-item"><span class="detail-label">Created At</span><span class="detail-value">${data.created}</span></div>
+            <div class="detail-item"><span class="detail-label">Status</span><span class="detail-value">${data.status}</span></div>
+            <div class="detail-item"><span class="detail-label">Restart Policy</span><span class="detail-value">${data.restart_policy}</span></div>
+            <div class="detail-item" style="grid-column: 1 / -1;"><span class="detail-label">Command</span><span class="detail-value">${data.command}</span></div>
+          </div>
+        `;
+      } else if (tab === 'env') {
+        const envList = data.env || [];
+        if (envList.length === 0) {
+          drawer.innerHTML = '<div style="color:var(--text-dim); padding: 12px;">No environment variables defined.</div>';
+          return;
+        }
+        let rows = '';
+        envList.forEach(e => {
+          rows += `
+            <tr>
+              <td class="env-key">${e.key}</td>
+              <td class="env-val">
+                <span>${e.value}</span>
+                <button class="btn btn-sm" style="padding:2px 6px; font-size:10px; margin-left:6px;" onclick="copyToClipboard('${e.value.replace(/'/g, "\\'")}', 'Copied ${e.key}!')">Copy</button>
+              </td>
+            </tr>
+          `;
+        });
+        drawer.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-size:11px; color:var(--text-dim);">${envList.length} Variables</span>
+            <button class="btn btn-secondary btn-sm" onclick="copyAllEnv('${cid}')">📋 Copy All</button>
+          </div>
+          <div class="env-table-wrap">
+            <table class="env-table">
+              <thead><tr><th>Variable</th><th>Value</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        `;
+      } else if (tab === 'net') {
+        let netHtml = '';
+        (data.networks || []).forEach(n => {
+          netHtml += `
+            <div class="detail-item">
+              <span class="detail-label">Network: ${n.name}</span>
+              <span class="detail-value">IP: ${n.ip} | Gateway: ${n.gateway}</span>
+            </div>
+          `;
+        });
+        let mountHtml = '';
+        (data.mounts || []).forEach(m => {
+          mountHtml += `
+            <div style="font-family:'JetBrains Mono', monospace; font-size:11px; padding: 4px 0; border-bottom: 1px solid var(--row-border);">
+              <span style="color:var(--accent); font-weight:600;">[${m.type.toUpperCase()}]</span> 
+              <span>${m.source || m.name}</span> &rarr; 
+              <span style="color:var(--text-muted);">${m.destination}</span>
+            </div>
+          `;
+        });
+        drawer.innerHTML = `
+          <div style="display:flex; flex-direction:column; gap:14px;">
+            <div class="details-grid">${netHtml || '<div>No networks attached</div>'}</div>
+            <div>
+              <div class="detail-label" style="margin-bottom:6px;">Storage Mounts & Volumes (${(data.mounts || []).length})</div>
+              <div style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:8px; padding:10px;">
+                ${mountHtml || 'No mounts'}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    function copyAllEnv(cid) {
+      const data = containerInspectCache[cid];
+      if (!data || !data.env) return;
+      const text = data.env.map(e => `${e.key}=${e.value}`).join('\\n');
+      copyToClipboard(text, 'All environment variables copied!');
+    }
+
+    // Render Containers List
     function renderContainers(data) {
-      const totals = data.totals || {};
-      const containers = data.containers || [];
-      updateHeaderStats(totals);
+      let containers = data.containers || cachedContainers;
+      if (searchQuery) {
+        containers = containers.filter(c => 
+          c.name.toLowerCase().includes(searchQuery) ||
+          c.image.toLowerCase().includes(searchQuery) ||
+          c.project.toLowerCase().includes(searchQuery) ||
+          (c.ports && c.ports.some(p => (p.display || '').toLowerCase().includes(searchQuery)))
+        );
+      }
 
       // Group by project
       const groups = {};
@@ -1254,9 +2001,13 @@ HTML_PAGE = """<!DOCTYPE html>
         }
       });
 
-      const main = document.getElementById('app-main');
+      const containerElem = document.getElementById('containers-container');
       if (containers.length === 0) {
-        main.innerHTML = '<div style="text-align: center; padding: 80px; color: var(--text-muted);">No containers found.</div>';
+        containerElem.innerHTML = `
+          <div style="text-align: center; padding: 70px; color: var(--text-muted);">
+            ${searchQuery ? `No containers match "${searchQuery}".` : 'No containers found.'}
+          </div>
+        `;
         return;
       }
 
@@ -1293,7 +2044,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="project-title">
                   <h2>${project}</h2>
                 </div>
-                <!-- Interactive Dropdown Badge (Clicking opens/closes services) -->
+                <!-- Interactive Dropdown Badge -->
                 <span class="project-dropdown-badge" title="Click to toggle services">
                   <span>${group.list.length} services</span>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
@@ -1373,14 +2124,18 @@ HTML_PAGE = """<!DOCTYPE html>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
                   <span>Restart Container</span>
                 </div>
+                <div class="dropdown-item" onclick="openTerminalModal('${c.id}', '${c.name}'); closeAllDropdowns();">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                  <span>Exec Terminal</span>
+                </div>
                 <div class="dropdown-item" onclick="viewLogs('${c.id}', '${c.name}'); closeAllDropdowns();">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                   <span>View Live Logs</span>
                 </div>
                 <div class="dropdown-divider"></div>
-                <div class="dropdown-item" onclick="toggleContainerDetails('${c.id}'); closeAllDropdowns();">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                  <span>Container Details</span>
+                <div class="dropdown-item" onclick="toggleContainerDetails('${c.id}', null, 'env'); closeAllDropdowns();">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <span>Inspect & Env Vars</span>
                 </div>
                 <div class="dropdown-item" onclick="copyToClipboard('${c.id}', 'Container ID copied: ${c.id}'); closeAllDropdowns();">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
@@ -1391,6 +2146,24 @@ HTML_PAGE = """<!DOCTYPE html>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                   <span>Open Port: ${c.ports[0].port}</span>
                 </div>` : ''}
+              </div>
+            </div>
+          `;
+
+          const drawerHtml = `
+            <div class="container-details" id="details-${c.id}">
+              <div class="details-subtabs">
+                <button class="details-subtab active" id="subtab-btn-${c.id}-overview" onclick="switchDrawerSubtab('${c.id}', 'overview')">Overview</button>
+                <button class="details-subtab" id="subtab-btn-${c.id}-env" onclick="switchDrawerSubtab('${c.id}', 'env')">Environment Variables</button>
+                <button class="details-subtab" id="subtab-btn-${c.id}-net" onclick="switchDrawerSubtab('${c.id}', 'net')">Network & Mounts</button>
+              </div>
+              <div id="details-body-${c.id}">
+                <div class="details-grid">
+                  <div class="detail-item"><span class="detail-label">ID</span><span class="detail-value">${c.id}</span></div>
+                  <div class="detail-item"><span class="detail-label">Created</span><span class="detail-value">${c.created}</span></div>
+                  <div class="detail-item"><span class="detail-label">Status</span><span class="detail-value">${c.status}</span></div>
+                  <div class="detail-item"><span class="detail-label">Command</span><span class="detail-value">${c.command || 'None'}</span></div>
+                </div>
               </div>
             </div>
           `;
@@ -1431,23 +2204,14 @@ HTML_PAGE = """<!DOCTYPE html>
                     ${dropdownHtml}
                   </div>
                 </div>
-
-                <!-- Expandable Details -->
-                <div class="container-details">
-                  <div class="details-grid">
-                    <div class="detail-item"><span class="detail-label">ID</span><span class="detail-value">${c.id}</span></div>
-                    <div class="detail-item"><span class="detail-label">Created</span><span class="detail-value">${c.created}</span></div>
-                    <div class="detail-item"><span class="detail-label">Status</span><span class="detail-value">${c.status}</span></div>
-                    <div class="detail-item"><span class="detail-label">Command</span><span class="detail-value">${c.command || 'None'}</span></div>
-                  </div>
-                </div>
+                ${drawerHtml}
               </div>
             `;
           } else {
             // Desktop Grid View
             html += `
               <div class="container-item ${openClass}" id="container-item-${c.id}">
-                <div class="container-row" onclick="toggleContainerDetails('${c.id}', event)" title="Click to view details">
+                <div class="container-row" onclick="toggleContainerDetails('${c.id}', event)" title="Click to view details and env vars">
                   <div class="col-name">
                     <svg class="container-toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
                     <span class="dot ${statusDot}"></span>
@@ -1486,16 +2250,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     ${dropdownHtml}
                   </div>
                 </div>
-
-                <!-- Expandable Details -->
-                <div class="container-details">
-                  <div class="details-grid">
-                    <div class="detail-item"><span class="detail-label">ID</span><span class="detail-value">${c.id}</span></div>
-                    <div class="detail-item"><span class="detail-label">Created</span><span class="detail-value">${c.created}</span></div>
-                    <div class="detail-item"><span class="detail-label">Status</span><span class="detail-value">${c.status}</span></div>
-                    <div class="detail-item"><span class="detail-label">Command</span><span class="detail-value">${c.command || 'None'}</span></div>
-                  </div>
-                </div>
+                ${drawerHtml}
               </div>
             `;
           }
@@ -1507,9 +2262,263 @@ HTML_PAGE = """<!DOCTYPE html>
         `;
       }
 
-      main.innerHTML = html;
+      containerElem.innerHTML = html;
     }
 
+    // Images Panel Fetch & Render
+    async function fetchImages() {
+      try {
+        const res = await fetch('/api/images');
+        const data = await res.json();
+        cachedImages = data.images || [];
+        document.getElementById('tab-count-images').innerText = data.count || 0;
+        document.getElementById('img-meta-count').innerText = data.count || 0;
+        document.getElementById('img-meta-size').innerText = data.total_size || '0 B';
+        renderImages(cachedImages);
+      } catch (err) {
+        showToast('Failed to load images');
+      }
+    }
+
+    function renderImages(images) {
+      const tbody = document.getElementById('images-tbody');
+      let filtered = images;
+      if (searchQuery) {
+        filtered = images.filter(img => 
+          img.repository.toLowerCase().includes(searchQuery) ||
+          img.tag.toLowerCase().includes(searchQuery) ||
+          img.id.toLowerCase().includes(searchQuery)
+        );
+      }
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:30px; color:var(--text-dim);">No images found.</td></tr>';
+        return;
+      }
+      let html = '';
+      filtered.forEach(img => {
+        const statusHtml = img.in_use 
+          ? `<span class="badge-in-use">In Use (${img.containers.join(', ') || 'container'})</span>`
+          : `<span class="badge-unused">Unused</span>`;
+
+        html += `
+          <tr>
+            <td>
+              <div style="font-weight:600; color:var(--text);">${img.repository}</div>
+              <div style="font-size:11px; color:var(--text-dim); font-family:'JetBrains Mono';">${img.tag}</div>
+            </td>
+            <td><code style="color:var(--accent); font-size:11.5px;">${img.id}</code></td>
+            <td><strong>${img.size}</strong></td>
+            <td style="color:var(--text-dim);">${img.created}</td>
+            <td>${statusHtml}</td>
+            <td style="text-align: right;">
+              <button class="btn btn-danger-outline btn-sm" onclick="deleteImage('${img.id}', '${img.full_name}')" title="Delete image">Delete</button>
+            </td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
+
+    async function deleteImage(id, name) {
+      if (!confirm(`Delete image ${name} (${id})?`)) return;
+      showToast('Deleting image...');
+      try {
+        const res = await fetch('/api/image/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: id })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('Image deleted');
+          fetchImages();
+        } else {
+          showToast('Failed: ' + (data.error || 'Image may be in use'));
+        }
+      } catch (e) {
+        showToast('Request failed');
+      }
+    }
+
+    async function pruneImages() {
+      if (!confirm('Prune all unused and dangling images to reclaim disk space?')) return;
+      showToast('Pruning unused images...');
+      try {
+        const res = await fetch('/api/images/prune', { method: 'POST' });
+        const data = await res.json();
+        showToast('Unused images pruned!');
+        fetchImages();
+      } catch (e) {
+        showToast('Prune failed');
+      }
+    }
+
+    // Volumes Panel Fetch & Render
+    async function fetchVolumes() {
+      try {
+        const res = await fetch('/api/volumes');
+        const data = await res.json();
+        cachedVolumes = data.volumes || [];
+        document.getElementById('tab-count-volumes').innerText = data.count || 0;
+        document.getElementById('vol-meta-count').innerText = data.count || 0;
+        renderVolumes(cachedVolumes);
+      } catch (err) {
+        showToast('Failed to load volumes');
+      }
+    }
+
+    function renderVolumes(volumes) {
+      const tbody = document.getElementById('volumes-tbody');
+      let filtered = volumes;
+      if (searchQuery) {
+        filtered = volumes.filter(v => 
+          v.name.toLowerCase().includes(searchQuery) ||
+          v.mountpoint.toLowerCase().includes(searchQuery) ||
+          (v.containers && v.containers.some(c => c.toLowerCase().includes(searchQuery)))
+        );
+      }
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-dim);">No volumes found.</td></tr>';
+        return;
+      }
+      let html = '';
+      filtered.forEach(v => {
+        const usingHtml = v.in_use 
+          ? `<span class="badge-in-use">${v.containers.join(', ')}</span>`
+          : `<span class="badge-unused">Dangling / Unused</span>`;
+
+        html += `
+          <tr>
+            <td>
+              <div style="font-weight:600; font-family:'JetBrains Mono'; color:var(--text);">${v.name}</div>
+            </td>
+            <td><span class="tab-badge">${v.driver}</span></td>
+            <td style="color:var(--text-dim); font-size:11px; font-family:'JetBrains Mono'; word-break:break-all;">${v.mountpoint}</td>
+            <td>${usingHtml}</td>
+            <td style="text-align: right;">
+              <button class="btn btn-danger-outline btn-sm" onclick="deleteVolume('${v.name}')" title="Delete volume">Delete</button>
+            </td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
+
+    async function deleteVolume(name) {
+      if (!confirm(`Delete volume ${name}? WARNING: Any data inside this volume will be permanently removed.`)) return;
+      showToast('Deleting volume...');
+      try {
+        const res = await fetch('/api/volume/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('Volume deleted');
+          fetchVolumes();
+        } else {
+          showToast('Failed: ' + (data.error || 'Volume may be attached to a container'));
+        }
+      } catch (e) {
+        showToast('Request failed');
+      }
+    }
+
+    // In-Browser Exec Terminal Logic
+    function openTerminalModal(cid, name) {
+      activeTerminalCid = cid;
+      activeTerminalName = name;
+      document.getElementById('terminal-modal-title').innerText = `Exec Terminal: ${name}`;
+      document.getElementById('terminal-prompt-label').innerText = `root@${name}:/#`;
+      document.getElementById('terminal-screen').innerText = `Connected to container '${name}' (${cid}). Type any command or click shortcuts.\\n\\n`;
+      document.getElementById('terminal-modal').classList.add('open');
+      const input = document.getElementById('terminal-input');
+      input.value = '';
+      input.focus();
+    }
+
+    function closeTerminal() {
+      document.getElementById('terminal-modal').classList.remove('open');
+      activeTerminalCid = null;
+      activeTerminalName = null;
+    }
+
+    function clearTerminalScreen() {
+      document.getElementById('terminal-screen').innerText = `Console cleared for ${activeTerminalName}.\\n`;
+    }
+
+    function quickTerminal(cmd) {
+      const input = document.getElementById('terminal-input');
+      input.value = cmd;
+      sendTerminalCommand();
+    }
+
+    function handleTerminalKey(e) {
+      if (e.key === 'Enter') {
+        sendTerminalCommand();
+      } else if (e.key === 'ArrowUp') {
+        if (terminalHistory.length && historyIdx > 0) {
+          historyIdx--;
+          document.getElementById('terminal-input').value = terminalHistory[historyIdx];
+        }
+      } else if (e.key === 'ArrowDown') {
+        if (historyIdx < terminalHistory.length - 1) {
+          historyIdx++;
+          document.getElementById('terminal-input').value = terminalHistory[historyIdx];
+        } else {
+          historyIdx = terminalHistory.length;
+          document.getElementById('terminal-input').value = '';
+        }
+      }
+    }
+
+    async function sendTerminalCommand() {
+      const input = document.getElementById('terminal-input');
+      const cmd = (input.value || '').trim();
+      if (!cmd || !activeTerminalCid) return;
+
+      terminalHistory.push(cmd);
+      historyIdx = terminalHistory.length;
+      input.value = '';
+
+      const screen = document.getElementById('terminal-screen');
+      screen.innerText += `\\nroot@${activeTerminalName}:/# ${cmd}\\n`;
+      screen.scrollTop = screen.scrollHeight;
+
+      try {
+        const res = await fetch(`/api/container/${activeTerminalCid}/exec`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd })
+        });
+        const data = await res.json();
+        if (data.stdout) screen.innerText += data.stdout;
+        if (data.stderr) screen.innerText += `\\n[stderr] ${data.stderr}`;
+        if (!data.stdout && !data.stderr) screen.innerText += '[Done with exit code 0]\\n';
+      } catch (err) {
+        screen.innerText += `\\n[Error executing command]: ${err.message}\\n`;
+      }
+      screen.scrollTop = screen.scrollHeight;
+    }
+
+    async function launchDesktopTerminal() {
+      if (!activeTerminalCid) return;
+      showToast('Launching desktop terminal...');
+      try {
+        const res = await fetch(`/api/container/${activeTerminalCid}/terminal`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Launched in ${data.terminal}!`);
+        } else {
+          showToast('Failed to launch: ' + (data.error || 'No terminal found'));
+        }
+      } catch (err) {
+        showToast('Launch failed');
+      }
+    }
+
+    // Container Actions
     async function containerAction(id, action) {
       showToast(`${action.toUpperCase()}ing container...`);
       try {
@@ -1572,12 +2581,13 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     window.addEventListener('resize', () => {
-      fetchContainers(true);
+      if (currentTab === 'containers') renderContainers({ containers: cachedContainers });
     });
 
+    // Initial Fetch & Auto Refresh
     fetchContainers(true);
     setInterval(() => {
-      fetchContainers(false);
+      if (currentTab === 'containers') fetchContainers(false);
     }, 3500);
   </script>
 </body>
@@ -1605,6 +2615,35 @@ class DockerHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(data).encode("utf-8"))
 
+        elif path == "/api/images":
+            data = get_images()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode("utf-8"))
+
+        elif path == "/api/volumes":
+            data = get_volumes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode("utf-8"))
+
+        elif path.startswith("/api/container/") and path.endswith("/inspect"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 4:
+                cid = parts[2]
+                inspect_data = get_container_inspect(cid)
+                if inspect_data:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(inspect_data).encode("utf-8"))
+                    return
+
+            self.send_response(404)
+            self.end_headers()
+
         elif path.startswith("/api/logs/"):
             container_id = path.split("/api/logs/")[1]
             success, stdout, stderr = run_cmd(["docker", "logs", "--tail", "200", container_id])
@@ -1622,6 +2661,15 @@ class DockerHandler(BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         path = url.path
 
+        # Read JSON body if available
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = {}
+        if content_length > 0:
+            try:
+                body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            except Exception:
+                pass
+
         if path.startswith("/api/container/"):
             parts = path.strip("/").split("/")
             if len(parts) == 4:
@@ -1633,6 +2681,23 @@ class DockerHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(json.dumps({"success": success, "error": stderr}).encode("utf-8"))
+                    return
+
+                elif action == "exec":
+                    cmd_str = body.get("command", "")
+                    success, stdout, stderr = exec_container_cmd(container_id, cmd_str)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": success, "stdout": stdout, "stderr": stderr}).encode("utf-8"))
+                    return
+
+                elif action == "terminal":
+                    success, term_name = launch_container_terminal(container_id)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": success, "terminal": term_name}).encode("utf-8"))
                     return
 
         elif path.startswith("/api/project/"):
@@ -1652,6 +2717,32 @@ class DockerHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(json.dumps({"success": all(successes)}).encode("utf-8"))
                     return
+
+        elif path == "/api/image/delete":
+            img_id = body.get("id", "")
+            success, stdout, stderr = run_cmd(["docker", "rmi", img_id])
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": success, "error": stderr}).encode("utf-8"))
+            return
+
+        elif path == "/api/images/prune":
+            success, stdout, stderr = run_cmd(["docker", "image", "prune", "-f"])
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": success, "output": stdout}).encode("utf-8"))
+            return
+
+        elif path == "/api/volume/delete":
+            vol_name = body.get("name", "")
+            success, stdout, stderr = run_cmd(["docker", "volume", "rm", vol_name])
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": success, "error": stderr}).encode("utf-8"))
+            return
 
         elif path == "/api/prune":
             success, stdout, stderr = run_cmd(["docker", "system", "prune", "-f"])

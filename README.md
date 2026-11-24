@@ -2,20 +2,20 @@
 
 # 🐳 Docker Manager
 
-### *A High-Performance, Zero-Overhead Native Docker Dashboard for Linux*
+### *A High-Performance, Zero-Overhead Native Docker Control Panel for Linux*
 
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-Native_Daemon-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 [![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://www.kernel.org/)
 [![Memory Footprint](https://img.shields.io/badge/Memory-~15_MB_RAM-brightgreen?style=for-the-badge&logo=speedtest&logoColor=white)](#-performance-vs-docker-desktop)
-[![Dependencies](https://img.shields.io/badge/Dependencies-Zero_External-blueviolet?style=for-the-badge)](#%EF%B8%8F-how-it-works)
+[![Dependencies](https://img.shields.io/badge/Dependencies-Zero_External-blueviolet?style=for-the-badge)](#%EF%B8%8F-architecture)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](#-license)
 
 <br/>
 
-**Docker Manager** is an ultra-fast, lightweight web dashboard and desktop control panel that directly replaces resource-heavy Docker Desktop on Linux. It gives you full container management, live resource telemetry, and interactive log streaming using **less than 20 MB of RAM** and **0.0% idle CPU**.
+**Docker Manager** is an ultra-fast, lightweight web dashboard and desktop control panel designed as a native Linux replacement for resource-heavy Docker Desktop. It provides full container orchestration, an interactive exec terminal, image storage telemetry, volumes exploration, and live resource monitoring using **less than 20 MB of RAM** and **0.0% idle CPU**.
 
-[🚀 Quick Start](#-quick-start) • [✨ Key Features](#-key-features) • [⚡ Performance Comparison](#-performance-vs-docker-desktop) • [🛠️ Architecture](#%EF%B8%8F-how-it-works) • [📖 Service Management](#%EF%B8%8F-service-management)
+[🚀 Quick Start](#-quick-start) • [✨ Key Features](#-key-features) • [⚡ Performance Comparison](#-performance-vs-docker-desktop) • [🛠️ Architecture](#%EF%B8%8F-architecture) • [📖 Service Management](#%EF%B8%8F-service-management)
 
 </div>
 
@@ -23,18 +23,43 @@
 
 ## ⚡ Performance vs. Docker Desktop
 
-| Telemetry / Feature | 🐋 Docker Desktop (Linux) | 🚀 Docker Manager | Efficiency Gain |
+| Telemetry / Metric | 🐋 Docker Desktop (Linux) | 🚀 Docker Manager | Advantage |
 | :--- | :---: | :---: | :--- |
 | **Idle Memory (RAM)** | ~2,500 MB – 4,000 MB | **~15 MB – 22 MB** | **99% lighter** |
-| **Idle CPU Usage** | 5% – 15% (QEMU VM overhead) | **0.0% – 0.2%** | **Near-zero CPU usage** |
+| **Idle CPU Usage** | 5% – 15% (QEMU VM background load) | **0.0% – 0.2%** | **Near-zero CPU usage** |
 | **Cold Startup Latency** | 30 – 60 seconds | **< 100 milliseconds** | **Instant launch** |
 | **External Dependencies** | Heavy VM + Electron + Chromium | **Python 3 Standard Library** | **Zero pip / npm packages** |
 | **Runtime Architecture** | Virtualized Linux VM | **Direct Linux Daemon** | **Native socket communication** |
-| **Laptop Battery & Thermals** | Causes fan spin & battery drain | **Cool & Whisper Quiet** | **Maximum battery life** |
+| **Laptop Battery & Thermals** | Causes fan spin & rapid battery drain | **Cool & Whisper Quiet** | **Maximum battery life** |
 
 ---
 
 ## ✨ Key Features
+
+### 🚀 Core Docker Desktop Replacement Features
+
+#### 1. 💻 Interactive Exec Shell & Desktop Terminal
+- **In-Browser Web Terminal:** Run real-time interactive shell commands (`whoami`, `ps aux`, `df -h`, `env`) inside any running container directly from your browser. Includes command history navigation (<kbd>↑</kbd> / <kbd>↓</kbd>) and quick shortcut pills.
+- **1-Click Native Desktop Terminal:** Instantly spawn your preferred Linux host terminal emulator (Ghostty, GNOME Terminal, or x-terminal-emulator) attached directly to `docker exec -it <container> sh`.
+
+#### 2. 🖼️ Images Manager & Disk Space Telemetry
+- Dedicated **Images** tab tracking all local images, repository tags, IDs, creation date, and individual disk footprints.
+- Live cumulative disk consumption telemetry (e.g. `7.11 GiB Total`).
+- Dynamic **In-Use** badges identifying which active containers are currently utilizing each image.
+- Safe single-image deletion (`docker rmi`) and dangling build cache prune (`docker image prune -f`).
+
+#### 3. 📂 Volumes & Mounts Explorer
+- Dedicated **Volumes** tab cataloging all local named and anonymous Docker volumes.
+- Host mountpoint filesystem inspection (`/var/lib/docker/volumes/.../_data`).
+- Real-time container attachment indicators with safe unused volume deletion.
+
+#### 4. 🔍 Real-Time Global Search Bar & Technical Inspector
+- Instant live search input (<kbd>/</kbd> to focus, <kbd>Esc</kbd> to clear) filtering across containers, compose stacks, image repositories, tags, ports, and volumes.
+- Container Details drawer showing IP addresses, Gateway, MAC address, host mounts, and a complete **Environment Variables** table with 1-click clipboard copy.
+
+---
+
+### ⚡ Dashboard & Control Features
 
 - 📦 **Docker Compose Stack Aware:** Automatically detects and groups containers by project stack (e.g. `immich`, `bhni`, `standalone`).
 - 🔽 **Collapsible Stack Drawers:** Expand or collapse individual project services with one click. UI state is remembered across reloads via `localStorage`.
@@ -76,12 +101,12 @@ The installer will automatically:
 
 ---
 
-## 🛠️ How It Works
+## 🛠️ Architecture
 
 ```text
 ┌────────────────────────────────────────────────────────┐
 │             Modern Responsive Web UI                   │
-│      (Collapsible Stacks • Live Telemetry • Theme)     │
+│   (Containers • Images • Volumes • Terminal • Search)  │
 └──────────────────────────▲─────────────────────────────┘
                            │ HTTP / JSON API (:4444)
 ┌──────────────────────────▼─────────────────────────────┐
@@ -101,7 +126,7 @@ The installer will automatically:
 └────────────────────────────────────────────────────────┘
 ```
 
-1. **Zero Third-Party Dependencies:** Runs entirely on native Python 3 (`http.server`, `urllib`, `threading`, `subprocess`). No `pip install` or `npm install` needed.
+1. **Zero Third-Party Dependencies:** Runs entirely on native Python 3 standard library (`http.server`, `urllib`, `threading`, `subprocess`). No `pip install` or `npm install` needed.
 2. **Non-Blocking Architecture:** Real-time Docker CPU and RAM telemetry runs on a lightweight background thread. User interactions and page rendering are never blocked.
 3. **Completely Rootless:** Operates within your user session using standard group permissions, requiring no `sudo` or elevated privileges.
 
